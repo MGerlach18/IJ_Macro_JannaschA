@@ -1,29 +1,33 @@
+//getting input paramaters
 #@ File (label = "Input directory", style = "directory") input
 #@ File (label = "Output directory", style = "directory") output
-#@ Integer (label="Pyramid Level to analyze", style="slider", min=1, max=8, value= 2, stepSize=1, persist=true) level
-
-//Obsolete, since Color Deconvolution 1 has been discontinued?
-//#@ String(label="Deconvolution Algorithm", choices={"ColorDeconvolution 1", "ColorDeconvolution 2"}, value="ColorDeconvolution 1", style="radioButtonHorizontal") T
-
-run("Bio-Formats Macro Extensions");
+#@ Integer (label="Pyramid Level to do the StarDist analyis", style="slider", min=1, max=8, value= 2, stepSize=1, persist=true) level
 
 //Preparing Stage
-//setBatchMode(true);
+run("Bio-Formats Macro Extensions");
 setOption("BlackBackground", true);
+run("Set Measurements...", "area redirect=None decimal=0");
 print("\\Clear");
+run("Clear Results");
 close("*");
-if (roiManager("count")>0) {
+setBatchMode(false);
 
+if (roiManager("count")>0) {
 roiManager("Deselect");
 roiManager("Delete");
-
 }
-Table.create("Summary");
+
 File.makeDirectory(output + "\\Manual_ROIS");
 File.makeDirectory(output + "\\Nuclear_ROIS");
 
-//Processing the folder 
-processFolder(input);
+//Processing the folder to create previes on lower scale
+processFolder_regionSelect(input);
+waitForUser("Preselection Phase Finished", "Preselection loop has been completed, processing will continue in background now");
+setBatchMode(true);
+Table.create("Summary");
+
+//Processing the folder again to do the complete Processing
+processFolder_regionProcess(input);
 
 //save Results as .csv-file and clean up
 selectWindow("Summary");
@@ -34,7 +38,7 @@ print("Batch processing completed");
 print("            { ");
 print("            { ");
 print("         {   } ");
-print("          }_{ __{ ");
+print("          }_{ { ");
 print("       .-{   }   }-. ");
 print("      (   }     {   ) ");
 print("   |`-.._____..-'| ");
@@ -49,37 +53,58 @@ print("    `-.._____..-'; ");
 
 //End of Macro
 
+
+
+
 //Definition of functions below
 
-// function to scan folders/subfolders/files to find files with correct suffix
-function processFolder(input) {
+
+// function to scan folders/subfolders/files to find files with correct suffix and process the region creation on a lower scale
+function processFolder_regionSelect(input) {
 	list = getFileList(input);
 	A=list.length;
 	print("0 of "  + A + " files processed");
 	for (i = 0; i < list.length; i++) {
 		if(File.isDirectory(input + File.separator + list[i]))
-			processFolder(input + File.separator + list[i]);
+			processFolder_regionSelect(input + File.separator + list[i]);
+		if(endsWith(list[i], ".czi"))
+			prepareRois(input, output, list[i]);
+	}
+}
+// function to scan folders/subfolders/files to find files with correct suffix and do the final processing
+function processFolder_regionProcess(input) {
+	list = getFileList(input);
+	for (i = 0; i < list.length; i++) {
+		if(File.isDirectory(input + File.separator + list[i]))
+			rocessFolder_regionProcess(input + File.separator + list[i]);
 		if(endsWith(list[i], ".czi"))
 			processFile(input, output, list[i]);
 	}
 }
 
-// function to do the actual processing
-function processFile(input, output, file) {
-
-// Bio-Formats Importer opens files in specified pyramid stage and gets metadata
-
-run("Bio-Formats Importer", "open=[" + input + "\\" + list[i] + "] color_mode=Default view=Hyperstack stack_order=XYCZT series_"+ level);
+//function to annotate ROIs in low-magnification images which load faster 
+function prepareRois(input, output, file) {
+//Import
+run("Bio-Formats Importer", "open=[" + input + "\\" + list[i] + "] color_mode=Default view=Hyperstack stack_order=XYCZT series_3");
 title=getTitle();
+array1=split(title," ");
+title=array1[0];
+
+//check wheter the presegmentation for this file already exists
+if (File.exists(output + "\\Manual_ROIS\\" + title  +".zip")) {
+	close("*");
+} else {
+
+//preparing file
+rename(title);
 Stack.getDimensions(width, height, channels, slices, frames);
-getPixelSize(unit, pixelWidth, pixelHeight);
 
-//Correct for wrong scaling in Pyramid formats
-pixelWidth2=(pixelWidth*pow(2, level-1));
-pixelHeight2=(pixelHeight*pow(2, level-1));
-run("Properties...", "channels="+channels+" slices="+slices+" frames="+frames+" pixel_width="+pixelWidth2+" pixel_height="+pixelHeight2+" voxel_depth=3.0000000");
+//adjusting to widescreen for improved segmentation properties
+if (width<height) {
+	run("Rotate 90 Degrees Right");
+}
 
-//Preparing&Getting statistics
+//Detecting total slice area
 run("Duplicate...", "title=Mask_Aorta duplicate");
 run("RGB Color");
 run("8-bit");
@@ -149,88 +174,159 @@ roiManager("add");
 roiManager("Select", 4);
 roiManager("rename", "Rough_Area");
 run("Select None");
-roiManager("save", output + "\\Manual_ROIS" + title  +".zip");
 
-//Creating Measurements 
-selectWindow("Summary");
-Table.set("Slice", i, title);
-
-//Measuring Area for all Rois in ROI Manager and
-//put them in a "Summary" table
-for (a = 0; a < roiManager("count"); a++) {
-roiManager("select", a);
-ROI=Roi.getName;
-Table.set(ROI + "_Total area [µm²]", i, (Roi.size*pixelWidth2*pixelHeight2));
+// save the RoiSet for further processing steps
+roiManager("save", output + "\\Manual_ROIS\\" + title  +".zip");
+roiManager("deselect");
+roiManager("delete");
+run("Close All");
 }
-Table.update;
+}
 
-//Color Deconvolution - Preset H&E DAB
+// function to do the actual processing (nuclear counbting with StarDist)
+function processFile(input, output, file) {
+
+// Bio-Formats Importer opens files in specified pyramid stage and gets metadata
+run("Bio-Formats Importer", "open=[" + input + "\\" + list[i] + "] color_mode=Default view=Hyperstack stack_order=XYCZT series_"+ level);
+title=getTitle();
+array1=split(title," ");
+title=array1[0];
+rename(title);
+Stack.getDimensions(width, height, channels, slices, frames);
+getPixelSize(unit, pixelWidth, pixelHeight);
+
+
+//correction for widescreen 
+if (width<height) {
+	run("Rotate 90 Degrees Right");
+}
+
+//Correct for wrong scaling in Pyramid formats
+pixelWidth2=(pixelWidth*pow(2, level-1));
+pixelHeight2=(pixelHeight*pow(2, level-1));
+run("Properties...", "channels="+channels+" slices="+slices+" frames="+frames+" pixel_width="+pixelWidth2+" pixel_height="+pixelHeight2+" voxel_depth=3.0000000");
+
+//Preparing&Getting statistics
+
+//Creating Measurements tabel
+selectWindow("Summary");
+Table.set("File Name", i, title);
+
+//Adapting ROIs to actual pyramid size and measure total area of ROIs
+roiManager("open", output + "\\Manual_ROIs\\" + title + ".zip");
+for (o=0; o<roiManager("count"); ++o) {
+	roiManager("Select", o);
+	ROI=Roi.getName;
+	// Scale ROI
+	run("Scale... ", "x="+ pow(2, 3-level)+" y="+ pow(2, 3-level));
+
+	// Replace old ROI with scaled one
+	roiManager("update");
+	
+	//measure ROI areas
+	run("Measure");
+	area=getResult("Area", o);
+	selectWindow("Summary");
+	Table.set(ROI + "_Total area [µm²]", i, area);
+}
+
+Table.update;
+run("Clear Results");
+
+//Color Deconvolution 2 - Preset H&E 2
 selectWindow(title);
 run("RGB Color");
 rename(title);
-run("Colour Deconvolution", "vectors=H&E");
+run("Colour Deconvolution2", "vectors=[H&E 2] output=32bit_Absorbance simulated cross hide");
 print("\\Clear");
-close(title + "-(Colour_2)");
-close(title + "-(Colour_3)");
+selectWindow(title + "-(Colour_1)A");
+run("8-bit");
+close(title + "-(Colour_2)A");
+close(title + "-(Colour_3)A");
 
 
-//Preparing measuremnt images for nucleus counting
-selectWindow(title + "-(Colour_1)");
+//Preparing measurement sub-images for nucleus counting
+selectWindow(title + "-(Colour_1)A");
+roiManager("select", 2);
+getSelectionBounds(x_smooth, y_smooth, w, h);
 run("Duplicate...", "title=Smooth_Area");
-roiManager("select", 2);
 run("Clear Outside");
 run("Select None");
-run("Invert");
-run("Grays");
 
-selectWindow(title + "-(Colour_1)");
+selectWindow(title + "-(Colour_1)A");
+roiManager("select", 3);
+getSelectionBounds(x_center, y_center, w, h);
 run("Duplicate...", "title=Center_Area");
-roiManager("select", 2);
 run("Clear Outside");
 run("Select None");
-run("Invert");
-run("Grays");
 
-selectWindow(title + "-(Colour_1)");
+selectWindow(title + "-(Colour_1)A");
+roiManager("select", 4);
+getSelectionBounds(x_rough, y_rough, w, h);
 run("Duplicate...", "title=Rough_Area");
-roiManager("select", 2);
 run("Clear Outside");
 run("Select None");
-run("Invert");
-run("Grays");
 
 //applying StarDist to the presegmented images and count
 roiManager("Deselect");
 roiManager("Delete");
 
 selectWindow("Smooth_Area");
-run("Command From Macro", "command=[de.csbdresden.stardist.StarDist2D], args=['input':'Smooth_Area', 'modelChoice':'Versatile (fluorescent nuclei)', 'normalizeInput':'true', 'percentileBottom':'0.0', 'percentileTop':'100.0', 'probThresh':'0.4', 'nmsThresh':'0.3', 'outputType':'ROI Manager', 'nTiles':'20', 'excludeBoundary':'2', 'roiPosition':'Automatic', 'verbose':'false', 'showCsbdeepProgress':'false', 'showProbAndDist':'false'], process=[false]");
+run("Command From Macro", "command=[de.csbdresden.stardist.StarDist2D], args=['input':'Smooth_Area', 'modelChoice':'Versatile (fluorescent nuclei)', 'normalizeInput':'true', 'percentileBottom':'25.0', 'percentileTop':'100.0', 'probThresh':'0.4', 'nmsThresh':'0.4', 'outputType':'ROI Manager', 'nTiles':'1', 'excludeBoundary':'2', 'roiPosition':'Automatic', 'verbose':'false', 'showCsbdeepProgress':'false', 'showProbAndDist':'false'], process=[false]");
+
+// count detected nuclei (ROIs) and put it into results table
 count=roiManager("count");
 selectWindow("Summary");
 Table.set("Smooth_Area_CellCount", i, count);
 Table.update;
 roiManager("Deselect");
-roiManager("Save", output + "\\Nuclear_ROIs\\" + title + "Smooth_Area.zip");
+
+// Shift ROIs to their original position in the image for verification purposes
+for (o=0; o<roiManager("count"); ++o) {
+	roiManager("Select", o);
+	run("Translate... ", "x="+x_smooth+" y="+y_smooth);
+	roiManager("update");
+}
+//save RoiSet controls for review
+roiManager("Save", output + "\\Nuclear_ROIs\\" + title + "_Smooth_Area.zip");
 roiManager("delete");
 
+// count detected nuclei (ROIs) and put it into results table
 selectWindow("Center_Area");
-run("Command From Macro", "command=[de.csbdresden.stardist.StarDist2D], args=['input':'Center_Area', 'modelChoice':'Versatile (fluorescent nuclei)', 'normalizeInput':'true', 'percentileBottom':'0.0', 'percentileTop':'100.0', 'probThresh':'0.4', 'nmsThresh':'0.3', 'outputType':'ROI Manager', 'nTiles':'20', 'excludeBoundary':'2', 'roiPosition':'Automatic', 'verbose':'false', 'showCsbdeepProgress':'false', 'showProbAndDist':'false'], process=[false]");
+run("Command From Macro", "command=[de.csbdresden.stardist.StarDist2D], args=['input':'Center_Area', 'modelChoice':'Versatile (fluorescent nuclei)', 'normalizeInput':'true', 'percentileBottom':'25.0', 'percentileTop':'100.0', 'probThresh':'0.4', 'nmsThresh':'0.4', 'outputType':'ROI Manager', 'nTiles':'1', 'excludeBoundary':'2', 'roiPosition':'Automatic', 'verbose':'false', 'showCsbdeepProgress':'false', 'showProbAndDist':'false'], process=[false]");
 count=roiManager("count");
 selectWindow("Summary");
 Table.set("Center_Area_CellCount", i, count);
 Table.update;
 roiManager("Deselect");
-roiManager("Save", output + "\\Nuclear_ROIs\\" + title + "Center_Area.zip");
+// Shift ROIs to their original position in the image  for verification purposes
+for (o=0; o<roiManager("count"); ++o) {
+	roiManager("Select", o);
+	run("Translate... ", "x="+x_center+" y="+y_center);
+	roiManager("update");
+}
+
+//save RoiSet controls for review
+roiManager("Save", output + "\\Nuclear_ROIs\\" + title + "_Center_Area.zip");
 roiManager("delete");
 
+// count detected nuclei (ROIs) and put it into results table
 selectWindow("Rough_Area");
-run("Command From Macro", "command=[de.csbdresden.stardist.StarDist2D], args=['input':'Rough_Area', 'modelChoice':'Versatile (fluorescent nuclei)', 'normalizeInput':'true', 'percentileBottom':'0.0', 'percentileTop':'100.0', 'probThresh':'0.4', 'nmsThresh':'0.3', 'outputType':'ROI Manager', 'nTiles':'20', 'excludeBoundary':'2', 'roiPosition':'Automatic', 'verbose':'false', 'showCsbdeepProgress':'false', 'showProbAndDist':'false'], process=[false]");
+run("Command From Macro", "command=[de.csbdresden.stardist.StarDist2D], args=['input':'Rough_Area', 'modelChoice':'Versatile (fluorescent nuclei)', 'normalizeInput':'true', 'percentileBottom':'25.0', 'percentileTop':'100.0', 'probThresh':'0.4', 'nmsThresh':'0.4', 'outputType':'ROI Manager', 'nTiles':'1', 'excludeBoundary':'2', 'roiPosition':'Automatic', 'verbose':'false', 'showCsbdeepProgress':'false', 'showProbAndDist':'false'], process=[false]");
 count=roiManager("count");
 selectWindow("Summary");
 Table.set("Rough_Area_CellCount", i, count);
 Table.update;
 roiManager("Deselect");
-roiManager("Save", output + "\\Nuclear_ROIs\\" + title + "Center_Area.zip");
+// Shift ROIs to their original position in the image for verification purposes
+for (o=0; o<roiManager("count"); ++o) {
+	roiManager("Select", o);
+	run("Translate... ", "x="+x_rough+" y="+y_rough);
+	roiManager("update");
+}
+//save RoiSet controls for review
+
+roiManager("Save", output + "\\Nuclear_ROIs\\" + title + "_Rough_Area.zip");
 roiManager("delete");
 
 //Clean up
@@ -238,5 +334,4 @@ roiManager("delete");
 roiManager("Deselect");
 roiManager("Delete");
 close("*");
-print((i+1)  + " of "  + A + " files processed");
 }
