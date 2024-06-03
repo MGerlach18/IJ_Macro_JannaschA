@@ -10,3 +10,4 @@ ImageJ macro for the batch analysis of Hematoxilin Eosin stained aortic sections
  Requires CSBD Deep Plugin
  Correctly adjust White Balance before use!
 
+https://zenodo.org/doi/10.5281/zenodo.11446684
