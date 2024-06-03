@@ -187,6 +187,15 @@ run("Close All");
 function processFile(input, output, file) {
 
 // Bio-Formats Importer opens files in specified pyramid stage and gets metadata
+//getting the Pyramid stage scale
+run("Bio-Formats Importer", "open=[" + input + File.separator + list[i] + "] color_mode=Default view=Hyperstack stack_order=XYCZT series_2");
+height2=getHeight();
+close();
+run("Bio-Formats Importer", "open=[" + input + File.separator + list[i] + "] color_mode=Default view=Hyperstack stack_order=XYCZT series_3");
+height3=getHeight();
+close();
+base=round(height2/height3);
+
 run("Bio-Formats Importer", "open=[" + input + "\\" + list[i] + "] color_mode=Default view=Hyperstack stack_order=XYCZT series_"+ level);
 title=getTitle();
 array1=split(title," ");
@@ -202,8 +211,8 @@ if (width<height) {
 }
 
 //Correct for wrong scaling in Pyramid formats
-pixelWidth2=(pixelWidth*pow(2, level-1));
-pixelHeight2=(pixelHeight*pow(2, level-1));
+pixelWidth2=(pixelWidth*pow(base, level-1));
+pixelHeight2=(pixelHeight*pow(base, level-1));
 run("Properties...", "channels="+channels+" slices="+slices+" frames="+frames+" pixel_width="+pixelWidth2+" pixel_height="+pixelHeight2+" voxel_depth=3.0000000");
 
 //Preparing&Getting statistics
@@ -218,7 +227,7 @@ for (o=0; o<roiManager("count"); ++o) {
 	roiManager("Select", o);
 	ROI=Roi.getName;
 	// Scale ROI
-	run("Scale... ", "x="+ pow(2, 3-level)+" y="+ pow(2, 3-level));
+	run("Scale... ", "x="+ pow(base, 3-level)+" y="+ pow(base, 3-level));
 
 	// Replace old ROI with scaled one
 	roiManager("update");
